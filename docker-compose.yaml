@@ -1,0 +1,35 @@
+version: '3.5'
+
+services:
+
+  nginx:
+    build:
+      context: .
+      dockerfile: docker/nginx/Dockerfile
+    ports:
+      - '8080:80'
+    depends_on:
+      - web
+    environment:
+      PHP_HOST: web
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - .:/var/www/html:cached
+
+  mysql:
+    image: mysql:5.7
+    ports:
+      - '13306:3306'
+    volumes:
+      - mysql:/var/lib/mysql:delegated
+    command: mysqld --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    environment:
+      MYSQL_DATABASE: 'example'
+      MYSQL_ALLOW_EMPTY_PASSWORD: 'yes'
+
+volumes:
+  ? mysql
