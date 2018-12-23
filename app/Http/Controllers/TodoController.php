@@ -18,4 +18,16 @@ class TodoController extends Controller
 
         return view('todos.index', ['todos' => $todos]);
     }
+
+
+    /**
+     * Display the specified resource.
+     *
+     * @param  \App\Todo  $todo
+     * @return \Illuminate\Http\Response
+     */
+    public function show(Todo $todo)
+    {
+        return view('todos.show', ['todo' => $todo]);
+    }
 }
