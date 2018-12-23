@@ -48,6 +48,9 @@
     "minimum-stability": "dev",
     "prefer-stable": true,
     "scripts": {
+        "test": [
+            "phpunit --coverage-text --coverage-html tmp/coverage tests/"
+        ],
         "local-init": [
             "@php -r \"file_exists('.env') || copy('.env.example', '.env');\"",
             "composer install",
