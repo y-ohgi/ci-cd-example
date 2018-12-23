@@ -20,8 +20,7 @@ RUN set -x \
   && composer install \
   && addgroup ${GNAME} -g ${GID} \
   && adduser -D -G ${GNAME} -u ${UID} ${UNAME} \
-  && chown -R ${UNAME}:${GNAME} $WORKDIR
-
-# apk del --purge autoconf g++ make
+  && chown -R ${UNAME}:${GNAME} $WORKDIR \
+  && apk del --purge autoconf g++ make
 
 USER ${UNAME}
