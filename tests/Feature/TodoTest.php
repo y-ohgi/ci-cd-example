@@ -6,15 +6,24 @@ use Tests\TestCase;
 use Illuminate\Foundation\Testing\WithFaker;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 
+use App\Todo;
+
 class TodoTest extends TestCase
 {
-    /**
-     * A basic test example.
-     *
-     * @return void
-     */
-    public function testExample()
+    public function testTodoIndex()
     {
-        $this->assertTrue(true);
+        $response = $this->get('/todos');
+
+        $response->assertStatus(200);
+    }
+
+    public function testTodoShow()
+    {
+        $todo = factory(Todo::class)->create();
+
+        $response = $this->get("/todos/$todo->id");
+
+        $response->assertStatus(200)
+            ->assertSeeText($todo->body);
     }
 }
