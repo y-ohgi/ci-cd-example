@@ -1,0 +1,96 @@
+version: 2
+
+anchors:
+  - &test_environment
+    docker:
+      - image: circleci/php:7.2-browsers
+      - image: circleci/mysql:5.7
+        environment:
+          MYSQL_DATABASE: testing
+    environment:
+      DB_HOST: 127.0.0.1
+
+
+  - &restore_cache
+    restore_cache:
+      keys:
+        - ci-cd-example-{{ checksum "composer.lock" }}
+        - ci-cd-example-
+
+  - &composer_install
+    run: composer install
+
+  - &save_cache
+    save_cache:
+      key: ci-cd-example-{{ checksum "composer.lock" }}
+      paths:
+        - vendor
+
+  - &initialize
+    run:
+      name: initialize
+      command: |
+        DOCKERIZE_VERSION=v0.6.1
+        wget https://github.com/jwilder/dockerize/releases/download/$DOCKERIZE_VERSION/dockerize-linux-amd64-$DOCKERIZE_VERSION.tar.gz
+        sudo tar -C /usr/local/bin -xzvf dockerize-linux-amd64-$DOCKERIZE_VERSION.tar.gz
+        sudo chmod +x /usr/local/bin/dockerize
+        rm dockerize-linux-amd64-$DOCKERIZE_VERSION.tar.gz
+        dockerize -wait tcp://${DB_HOST}:3306 -timeout 1m
+
+        sudo docker-php-ext-install pdo_mysql
+
+        cp .env.testing .env
+        composer dump-autoload
+        php artisan migrate
+
+  - &test
+    run: composer test
+
+jobs:
+  test:
+    <<: *test_environment
+
+    steps:
+      - checkout
+      - *restore_cache
+      - *composer_install
+      - *save_cache
+
+      - *initialize
+
+      - *test
+
+      - store_artifacts:
+          path: tmp/coverage
+
+  # developブランチをマージしてtestを実行する
+  merge_test:
+    <<: *test_environment
+
+    steps:
+      - checkout
+
+      - run: git merge develop
+
+      - *restore_cache
+      - *composer_install
+      - *save_cache
+
+      - *initialize
+
+      - *test
+
+workflows:
+  version: 2
+  test:
+    jobs:
+      - test
+
+      - merge_test:
+          filters:
+            branches:
+              ignore:
+                - master
+                - develop
+            tags:
+              ignore: /.*/
