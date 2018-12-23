@@ -1,0 +1,576 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Parameters:
+  StackPrefix:
+    Type: 'String'
+    Default: 'example'
+
+  VpcCidr:
+    Type: 'String'
+    Default: '10.0.0.0/16'
+
+  PublicSubnet0Cidr:
+    Type: 'String'
+    Default: '10.0.0.0/24'
+  PublicSubnet1Cidr:
+    Type: 'String'
+    Default: '10.0.1.0/24'
+  PublicSubnet2Cidr:
+    Type: 'String'
+    Default: '10.0.2.0/24'
+
+  PrivateSubnet0Cidr:
+    Type: 'String'
+    Default: '10.0.10.0/24'
+  PrivateSubnet1Cidr:
+    Type: 'String'
+    Default: '10.0.11.0/24'
+  PrivateSubnet2Cidr:
+    Type: 'String'
+    Default: '10.0.12.0/24'
+
+  DBInstanceClass:
+    Type: 'String'
+    Default: 'db.t2.small'
+
+  DatabaseName:
+    #XXX: productionの場合はSecretManager推奨
+    # Type: 'AWS::SSM::Parameter::Value<String>'
+    Type: 'String'
+    Default: 'example'
+
+  MasterUsername:
+    # Type: 'AWS::SSM::Parameter::Value<String>'
+    Type: 'String'
+    Default: 'dbuser'
+
+  MasterUserPassword:
+    # Type: 'AWS::SSM::Parameter::Value<String>'
+    Type: 'String'
+    Default: 'password'
+    NoEcho: true
+
+  #XXX: 拡張モニタリングの間隔(秒)。0を指定すると拡張モニタリングが無効に。
+  #   有効な値：0, 1, 5, 10, 15, 30, 60
+  MonitoringInterval:
+    Type: 'Number'
+    Default: 30
+    AllowedValues:
+      - 0
+      - 1
+      - 5
+      - 10
+      - 15
+      - 30
+      - 60
+
+  DomainName:
+    Type: 'String'
+    Default: 'ponkotu.me'
+
+Resources:
+  ##################################################
+  # VPC
+  ##################################################
+  Vpc:
+    Type: 'AWS::EC2::VPC'
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: 'true'
+      EnableDnsHostnames: 'true'
+      Tags:
+      - Key: 'Name'
+        Value: !Sub 'vpc-${StackPrefix}'
+
+  ##################################################
+  # VPC FlowLog
+  ##################################################
+  VpcFlowlogIam:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument: |
+        {
+          "Statement": [{
+            "Effect": "Allow",
+            "Action": "sts:AssumeRole",
+            "Principal": {
+              "Service": "vpc-flow-logs.amazonaws.com"
+            }
+          }]
+        }
+      Policies:
+        - PolicyName: !Sub '${StackPrefix}-vpcflowlog'
+          PolicyDocument: |
+            {
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "logs:CreateLogGroup",
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents",
+                    "logs:DescribeLogGroups",
+                    "logs:DescribeLogStreams"
+                  ],
+                  "Resource": "*"
+                }
+              ]
+            }
+
+  VpcFlowlog:
+    DependsOn: VpcFlowlogLogGroup
+    Type: 'AWS::EC2::FlowLog'
+    Properties:
+      DeliverLogsPermissionArn: !GetAtt VpcFlowlogIam.Arn
+      LogGroupName: !Sub '/${StackPrefix}/vpc/flow'
+      ResourceId: !Ref Vpc
+      ResourceType: 'VPC'
+      TrafficType: 'ALL'
+
+  VpcFlowlogLogGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Properties:
+      LogGroupName: !Sub '/${StackPrefix}/vpc/flow'
+      RetentionInDays: 30
+
+  ##################################################
+  # Public Network
+  ##################################################
+  # Subnet
+  SubnetPublic0:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref PublicSubnet0Cidr
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+      - Key: 'Name'
+        Value: !Sub 'sb-${StackPrefix}-public0'
+
+  SubnetPublic1:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref PublicSubnet1Cidr
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags:
+      - Key: 'Name'
+        Value: !Sub 'sb-${StackPrefix}-public1'
+
+  SubnetPublic2:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref PublicSubnet2Cidr
+      AvailabilityZone: !Select [2, !GetAZs '']
+      Tags:
+      - Key: 'Name'
+        Value: !Sub 'sb-${StackPrefix}-public2'
+
+  # Route Table
+  RouteTablePublic0:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+      - Key: 'Name'
+        Value: !Sub 'rtb-${StackPrefix}-public0'
+
+  RouteTablePublic1:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+      - Key: 'Name'
+        Value: !Sub 'rtb-${StackPrefix}-public1'
+
+  RouteTablePublic2:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+      - Key: 'Name'
+        Value: !Sub 'rtb-${StackPrefix}-public2'
+
+  # Assign subnet to route table
+  AssignSubnetPublic0ToRouteTablePublic0:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      RouteTableId: !Ref RouteTablePublic0
+      SubnetId: !Ref SubnetPublic0
+
+  AssignSubnetPublic1ToRouteTablePublic1:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      RouteTableId: !Ref RouteTablePublic1
+      SubnetId: !Ref SubnetPublic1
+
+  AssignSubnetPublic2ToRouteTablePublic2:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      RouteTableId: !Ref RouteTablePublic2
+      SubnetId: !Ref SubnetPublic2
+
+  # Internet Gateway
+  InternetGateway:
+    Type: 'AWS::EC2::InternetGateway'
+    Properties:
+      Tags:
+      - Key: 'Name'
+        Value: !Sub 'igw-${StackPrefix}'
+  InternetGatewayAttach:
+    Type: 'AWS::EC2::VPCGatewayAttachment'
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  # Attache Internet Gateway
+  AttachIGWToRouteTablePublic0:
+    Type: 'AWS::EC2::Route'
+    Properties:
+      DestinationCidrBlock: '0.0.0.0/0'
+      RouteTableId: !Ref RouteTablePublic0
+      GatewayId: !Ref InternetGateway
+
+  AttachIGWToRouteTablePublic1:
+    Type: 'AWS::EC2::Route'
+    Properties:
+      DestinationCidrBlock: '0.0.0.0/0'
+      RouteTableId: !Ref RouteTablePublic1
+      GatewayId: !Ref InternetGateway
+
+  AttachIGWToRouteTablePublic2:
+    Type: 'AWS::EC2::Route'
+    Properties:
+      DestinationCidrBlock: '0.0.0.0/0'
+      RouteTableId: !Ref RouteTablePublic2
+      GatewayId: !Ref InternetGateway
+
+  ##################################################
+  # Private Network
+  ##################################################
+  # Subnet
+  SubnetPrivate0:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref PrivateSubnet0Cidr
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+      - Key: 'Name'
+        Value: !Sub 'sb-${StackPrefix}-private0'
+
+  SubnetPrivate1:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref PrivateSubnet1Cidr
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags:
+      - Key: 'Name'
+        Value: !Sub 'sb-${StackPrefix}-private1'
+
+  SubnetPrivate2:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref PrivateSubnet2Cidr
+      AvailabilityZone: !Select [2, !GetAZs '']
+      Tags:
+      - Key: 'Name'
+        Value: !Sub 'sb-${StackPrefix}-private2'
+
+  # Route Table
+  RouteTablePrivate0:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+      - Key: 'Name'
+        Value: !Sub 'rtb-${StackPrefix}-private0'
+
+  RouteTablePrivate1:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+      - Key: 'Name'
+        Value: !Sub 'rtb-${StackPrefix}-private1'
+
+  RouteTablePrivate2:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+      - Key: 'Name'
+        Value: !Sub 'rtb-${StackPrefix}-private2'
+
+  # Assign subnet to route table
+  AssignSubnetPrivate0ToRouteTablePrivate0:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      RouteTableId: !Ref RouteTablePrivate0
+      SubnetId: !Ref SubnetPrivate0
+
+  AssignSubnetPrivate1ToRouteTablePrivate1:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      RouteTableId: !Ref RouteTablePrivate1
+      SubnetId: !Ref SubnetPrivate1
+
+  AssignSubnetPrivate2ToRouteTablePrivate2:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      RouteTableId: !Ref RouteTablePrivate2
+      SubnetId: !Ref SubnetPrivate2
+
+  # Nat Gateway
+  EIPPublic0:
+    Type: 'AWS::EC2::EIP'
+    Properties:
+      Domain: 'vpc'
+  NatGatewayPublic0:
+    Type: 'AWS::EC2::NatGateway'
+    Properties:
+      AllocationId: !GetAtt EIPPublic0.AllocationId
+      SubnetId: !Ref SubnetPublic0
+      Tags:
+      - Key: 'Name'
+        Value: !Sub 'ngw-${StackPrefix}-public0'
+
+  EIPPublic1:
+    Type: 'AWS::EC2::EIP'
+    Properties:
+      Domain: 'vpc'
+  NatGatewayPublic1:
+    Type: 'AWS::EC2::NatGateway'
+    Properties:
+      AllocationId: !GetAtt EIPPublic1.AllocationId
+      SubnetId: !Ref SubnetPublic1
+      Tags:
+      - Key: 'Name'
+        Value: !Sub 'ngw-${StackPrefix}-public1'
+
+  EIPPublic2:
+    Type: 'AWS::EC2::EIP'
+    Properties:
+      Domain: 'vpc'
+  NatGatewayPublic2:
+    Type: 'AWS::EC2::NatGateway'
+    Properties:
+      AllocationId: !GetAtt EIPPublic2.AllocationId
+      SubnetId: !Ref SubnetPublic2
+      Tags:
+      - Key: 'Name'
+        Value: !Sub 'ngw-${StackPrefix}-public2'
+
+  # Mount Nat Gateway
+  MountNatGatewayToRouteTablePrivate0:
+    Type: 'AWS::EC2::Route'
+    Properties:
+      RouteTableId: !Ref RouteTablePrivate0
+      DestinationCidrBlock: '0.0.0.0/0'
+      NatGatewayId: !Ref NatGatewayPublic0
+
+  MountNatGatewayToRouteTablePrivate1:
+    Type: 'AWS::EC2::Route'
+    Properties:
+      RouteTableId: !Ref RouteTablePrivate1
+      DestinationCidrBlock: '0.0.0.0/0'
+      NatGatewayId: !Ref NatGatewayPublic1
+
+  MountNatGatewayToRouteTablePrivate2:
+    Type: 'AWS::EC2::Route'
+    Properties:
+      RouteTableId: !Ref RouteTablePrivate2
+      DestinationCidrBlock: '0.0.0.0/0'
+      NatGatewayId: !Ref NatGatewayPublic2
+
+  ##################################################
+  # Security Group
+  ##################################################
+  SecurityGroupAlb:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: !Sub 'sg ${StackPrefix} alb'
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: 'Name'
+          Value: !Sub 'sg-${StackPrefix}-alb'
+      SecurityGroupIngress:
+        #XXX: ALB Listenerで301リダイレクトをする場合全公開するしか無い
+        #       HTTPのトラフィックはアプリケーションへ流さず、社内ネットワークはHTTPSで制限をする
+        - CidrIp: '0.0.0.0/0'
+          IpProtocol: 'tcp'
+          FromPort: 80
+          ToPort: 80
+        # VCP Cidr
+        - CidrIp: '0.0.0.0/0'
+          IpProtocol: 'tcp'
+          FromPort: 443
+          ToPort: 443
+
+  SecurityGroupAurora:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: !Sub 'sg ${StackPrefix} aurora'
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: 'Name'
+          Value: !Sub 'sg-${StackPrefix}-aurora'
+      SecurityGroupIngress:
+        - SourceSecurityGroupId: !Ref SecurityGroupEcsApp
+          IpProtocol: 'tcp'
+          FromPort: 3306
+          ToPort: 3306
+
+  SecurityGroupEcsApp:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: !Sub 'sg ${StackPrefix} ecs app'
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: 'Name'
+          Value: !Sub 'sg-${StackPrefix}-app'
+      SecurityGroupIngress:
+        - SourceSecurityGroupId: !Ref SecurityGroupAlb
+          IpProtocol: 'tcp'
+          FromPort: 80
+          ToPort: 80
+
+  ##################################################
+  # Aurora
+  ##################################################
+  # 拡張モニタリング用Role
+  MonitoringRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument: |
+        {
+          "Statement": [{
+            "Effect": "Allow",
+            "Action": "sts:AssumeRole",
+            "Principal": {
+              "Service": "monitoring.rds.amazonaws.com"
+            }
+          }]
+        }
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AmazonRDSEnhancedMonitoringRole'
+
+  ClusterParameterGroup:
+    Type: 'AWS::RDS::DBClusterParameterGroup'
+    Properties:
+      Description: !Sub 'Aurora MySQL parameter group from ${AWS::StackName}'
+      Family: 'aurora-mysql5.7'
+      Parameters:
+        character_set_database: 'utf8mb4'
+        character_set_server: 'utf8mb4'
+        character_set_results: 'utf8mb4'
+        character_set_connection: 'utf8mb4'
+        character_set_client: 'utf8mb4'
+
+  SubnetGroup:
+    Type: 'AWS::RDS::DBSubnetGroup'
+    Properties:
+      DBSubnetGroupDescription: !Sub 'Aurora Subnet Group from ${AWS::StackName}'
+      SubnetIds:
+        - !Ref SubnetPrivate0
+        - !Ref SubnetPrivate1
+        - !Ref SubnetPrivate2
+
+  #TODO: AutoScale
+  AuroraCluster:
+    Type: 'AWS::RDS::DBCluster'
+    Properties:
+      Engine: 'aurora-mysql'
+      DatabaseName: !Ref DatabaseName
+      DBClusterParameterGroupName: !Ref ClusterParameterGroup
+      DBSubnetGroupName: !Ref SubnetGroup
+      MasterUserPassword: !Ref MasterUserPassword
+      MasterUsername: !Ref MasterUsername
+      VpcSecurityGroupIds:
+        - !Ref SecurityGroupAurora
+
+  AuroraInstance0:
+    Type: 'AWS::RDS::DBInstance'
+    Properties:
+      Engine: 'aurora-mysql'
+      DBClusterIdentifier: !Ref AuroraCluster
+      DBInstanceClass: !Ref DBInstanceClass
+      DBSubnetGroupName: !Ref SubnetGroup
+      MonitoringInterval: !Ref MonitoringInterval
+      MonitoringRoleArn: !GetAtt MonitoringRole.Arn
+
+  AuroraInstance1:
+    Type: 'AWS::RDS::DBInstance'
+    Properties:
+      Engine: 'aurora-mysql'
+      DBClusterIdentifier: !Ref AuroraCluster
+      DBInstanceClass: !Ref DBInstanceClass
+      DBSubnetGroupName: !Ref SubnetGroup
+      MonitoringInterval: !Ref MonitoringInterval
+      MonitoringRoleArn: !GetAtt MonitoringRole.Arn
+
+  ##################################################
+  # ALB
+  ##################################################
+  #TODO: ACMのWebコンソールから手動で操作する必要有り
+  Acm:
+    Type: 'AWS::CertificateManager::Certificate'
+    Properties:
+      DomainName: !Ref DomainName
+      DomainValidationOptions:
+      - DomainName: !Ref DomainName
+        ValidationDomain: !Ref DomainName
+      ValidationMethod: DNS
+
+  Alb:
+    Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer'
+    Properties:
+      Type: 'application'
+      Name: !Sub 'alb-${StackPrefix}'
+      IpAddressType: 'ipv4'
+      Scheme: 'internet-facing'
+      Subnets:
+        - !Ref SubnetPublic0
+        - !Ref SubnetPublic1
+        - !Ref SubnetPublic2
+      SecurityGroups:
+        - !Ref SecurityGroupAlb
+
+  #XXX: httpへのリクエストを全て443へリダイレクト
+  AlbListenerHttp:
+    Type: 'AWS::ElasticLoadBalancingV2::Listener'
+    Properties:
+      DefaultActions:
+        - Type: 'redirect'
+          RedirectConfig:
+            StatusCode: 'HTTP_301'
+            Protocol: 'HTTPS'
+            Port: 443
+      LoadBalancerArn: !Ref Alb
+      Port: 80
+      Protocol: 'HTTP'
+
+  #XXX: 443はデフォルトで503エラーを返す
+  AlbListenerHttps:
+    Type: 'AWS::ElasticLoadBalancingV2::Listener'
+    Properties:
+      Certificates:
+        - CertificateArn: !Ref Acm
+      DefaultActions:
+        - Type: 'fixed-response'
+          FixedResponseConfig:
+            StatusCode: 503
+      LoadBalancerArn: !Ref Alb
+      Port: 443
+      Protocol: 'HTTPS'
+
+  ##################################################
+  # ECS Cluster
+  ##################################################
+  EcsCluster:
+    Type: 'AWS::ECS::Cluster'
+    Properties:
+      ClusterName: !Sub '${StackPrefix}-cluster'
