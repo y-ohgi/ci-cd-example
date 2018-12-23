@@ -51,6 +51,7 @@
         "local-init": [
             "@php -r \"file_exists('.env') || copy('.env.example', '.env');\"",
             "composer install",
+            "composer dump-autoload",
             "@php artisan migrate"
         ],
         "post-autoload-dump": [
