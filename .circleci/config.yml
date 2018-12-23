@@ -46,9 +46,6 @@ anchors:
   - &test
     run: composer test
 
-
-
-
 jobs:
   test:
     <<: *test_environment
