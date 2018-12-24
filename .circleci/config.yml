@@ -69,13 +69,13 @@ anchors:
               .
             docker push $(eval echo $AWS_ACCOUNT_ID).dkr.ecr.ap-northeast-1.amazonaws.com/nginx:${IMAGE_TAG}
       - run:
-          name: api image
+          name: web image
           command: |
             IMAGE_TAG=$(echo ${CIRCLE_SHA1} | cut -c 1-6)
             docker build \
               -t $(eval echo $AWS_ACCOUNT_ID).dkr.ecr.ap-northeast-1.amazonaws.com/web:${IMAGE_TAG} \
               .
-            docker push $(eval echo $AWS_ACCOUNT_ID).dkr.ecr.ap-northeast-1.amazonaws.com/web$:{IMAGE_TAG}
+            docker push $(eval echo $AWS_ACCOUNT_ID).dkr.ecr.ap-northeast-1.amazonaws.com/web:${IMAGE_TAG}
 
 jobs:
   test:
