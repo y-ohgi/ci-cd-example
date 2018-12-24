@@ -75,7 +75,7 @@ anchors:
             docker build \
               -t $(eval echo $AWS_ACCOUNT_ID).dkr.ecr.ap-northeast-1.amazonaws.com/web:${IMAGE_TAG} \
               .
-            docker push $(eval echo $AWS_ACCOUNT_ID).dkr.ecr.ap-northeast-1.amazonaws.com/web${IMAGE_TAG}
+            docker push $(eval echo $AWS_ACCOUNT_ID).dkr.ecr.ap-northeast-1.amazonaws.com/web$:{IMAGE_TAG}
 
 jobs:
   test:
