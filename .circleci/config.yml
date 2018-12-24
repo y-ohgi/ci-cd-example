@@ -46,39 +46,77 @@ anchors:
   - &test
     run: composer test
 
+  - &delivery_image
+    docker:
+      - image: circleci/python:3
+    steps:
+      - checkout
+      - setup_remote_docker
+      - run:
+          name: ecr login
+          command: |
+            sudo pip install awscli
+            aws configure set aws_access_key_id $(eval echo $AWS_ACCESS_KEY)
+            aws configure set aws_secret_access_key $(eval echo $AWS_SECRET_KEY)
+            $(aws ecr get-login --no-include-email --region ap-northeast-1)
+      - run:
+          name: nginx image
+          command: |
+            IMAGE_TAG=$(echo ${CIRCLE_SHA1} | cut -c 1-6)
+            docker build \
+              -t $(eval echo $AWS_ACCOUNT_ID).dkr.ecr.ap-northeast-1.amazonaws.com/nginx:${IMAGE_TAG} \
+              -f docker/nginx/Dockerfile \
+              .
+            docker push $(eval echo $AWS_ACCOUNT_ID).dkr.ecr.ap-northeast-1.amazonaws.com/nginx:${IMAGE_TAG}
+      - run:
+          name: api image
+          command: |
+            IMAGE_TAG=$(echo ${CIRCLE_SHA1} | cut -c 1-6)
+            docker build \
+              -t $(eval echo $AWS_ACCOUNT_ID).dkr.ecr.ap-northeast-1.amazonaws.com/web:${IMAGE_TAG} \
+              .
+            docker push $(eval echo $AWS_ACCOUNT_ID).dkr.ecr.ap-northeast-1.amazonaws.com/web${IMAGE_TAG}
+
 jobs:
   test:
     <<: *test_environment
-
     steps:
       - checkout
       - *restore_cache
       - *composer_install
       - *save_cache
-
       - *initialize
-
       - *test
-
       - store_artifacts:
           path: tmp/coverage
 
   # developブランチをマージしてtestを実行する
   merge_test:
     <<: *test_environment
-
     steps:
       - checkout
-
       - run: git merge develop
-
       - *restore_cache
       - *composer_install
       - *save_cache
-
       - *initialize
-
       - *test
+
+  # ステージングAWSアカウントのECRへイメージの配布
+  delivery_stg:
+    <<: *delivery_image
+    environment:
+      AWS_ACCOUNT_ID: $AWS_STG_ACCOUNT_ID
+      AWS_ACCESS_KEY: $AWS_STG_ACCESS_KEY
+      AWS_SECRET_KEY: $AWS_STG_SECRET_KEY
+
+  # # 本番AWSアカウントのECRへイメージの配布
+  # delivery_prod:
+  #   <<: *delivery_image
+  #   environment:
+  #     AWS_ACCOUNT_ID: $AWS_PROD_ACCOUNT_ID
+  #     AWS_ACCESS_KEY: $AWS_PROD_ACCESS_KEY
+  #     AWS_SECRET_KEY: $AWS_PROD_SECRET_KEY
 
 workflows:
   version: 2
@@ -94,3 +132,25 @@ workflows:
                 - develop
             tags:
               ignore: /.*/
+
+  delivery_stg:
+    jobs:
+      - test
+      - delivery_stg:
+          requires:
+            - test
+          filters:
+            branches:
+              only:
+                - develop
+
+  # delivery_prod:
+  #   jobs:
+  #     - test
+  #     - delivery_prod
+  #         requires:
+  #           - test
+  #         filters:
+  #           branches:
+  #             only:
+  #               - master
