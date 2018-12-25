@@ -750,3 +750,292 @@ Resources:
           ContainerPort: 80
           ContainerName: 'nginx'
 
+  ##################################################
+  # CD
+  ##################################################
+  CodeBuildLogGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Properties:
+      LogGroupName: !Sub '/aws/codebuild/${StackPrefix}'
+      RetentionInDays: 7
+
+  CodePipelineArtifactBucket:
+    Type: 'AWS::S3::Bucket'
+    DeletionPolicy: 'Retain'
+
+  CodeBuildRole:
+    DependsOn: [CodeBuildLogGroup, CodePipelineArtifactBucket]
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Action: ['sts:AssumeRole']
+            Effect: 'Allow'
+            Principal:
+              Service: ['codebuild.amazonaws.com']
+      Policies:
+        - PolicyName: "CodeBuildCustomPolicy"
+          PolicyDocument: !Sub |
+            {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Action": [
+                    "s3:GetObject",
+                    "s3:GetObjectVersion",
+                    "s3:PutObject"
+                  ],
+                  "Resource": [
+                    "arn:aws:s3:::${CodePipelineArtifactBucket}/*"
+                  ],
+                  "Effect": "Allow"
+                },
+                {
+                  "Action": [
+                    "logs:CreateLogGroup",
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents"
+                  ],
+                  "Resource": [
+                    "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${StackPrefix}",
+                    "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${StackPrefix}:*"
+                  ],
+                  "Effect": "Allow"
+                },
+                {
+                  "Action": [
+                    "ecr:BatchCheckLayerAvailability",
+                    "ecr:CompleteLayerUpload",
+                    "ecr:InitiateLayerUpload",
+                    "ecr:PutImage",
+                    "ecr:UploadLayerPart"
+                  ],
+                  "Resource": [
+                    "arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/web"
+                  ],
+                  "Effect": "Allow"
+                },
+                {
+                  "Action": [
+                    "ecr:GetAuthorizationToken"
+                  ],
+                  "Resource": [
+                    "*"
+                  ],
+                  "Effect": "Allow"
+                }
+              ]
+            }
+
+  CodeBuildProject:
+    Type: 'AWS::CodeBuild::Project'
+    Properties:
+      Name: !Sub '${StackPrefix}'
+      ServiceRole: !GetAtt CodeBuildRole.Arn
+      Environment:
+        Type: 'LINUX_CONTAINER'
+        ComputeType: 'BUILD_GENERAL1_SMALL'
+        Image: 'aws/codebuild/docker:17.09.0'
+        PrivilegedMode: true
+      Source:
+        Type: 'CODEPIPELINE'
+        BuildSpec: |
+            version: 0.2
+            phases:
+              build:
+                commands:
+                  - sudo apt -y update && sudo apt -y install jq
+                  - printf '[{"name":"web","imageUri":"%s"}]' $(cat imageDetail.json | jq -r '.ImageURI') > imageManifest.json
+            artifacts:
+              files:
+                - imageManifest.json
+      Artifacts:
+        Type: 'CODEPIPELINE'
+      TimeoutInMinutes: 30
+
+  CodePipelineRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Action: ['sts:AssumeRole']
+            Effect: 'Allow'
+            Principal:
+              Service: ['codepipeline.amazonaws.com']
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSCodePipelineFullAccess
+        - arn:aws:iam::aws:policy/AWSCodeBuildDeveloperAccess
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPowerUser
+      Policies:
+        - PolicyName: "DataSourceAccess"
+          PolicyDocument: !Sub |
+            {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Action": [
+                    "s3:PutObject"
+                  ],
+                  "Resource": [
+                    "arn:aws:s3:::${CodePipelineArtifactBucket}/*"
+                  ],
+                  "Effect": "Allow"
+                },
+                {
+                  "Action": [
+                    "ecs:*"
+                  ],
+                  "Resource": [
+                    "*"
+                  ],
+                  "Effect": "Allow"
+                }
+              ]
+            }
+
+  CodePipeline:
+    Type: 'AWS::CodePipeline::Pipeline'
+    Properties:
+      ArtifactStore:
+        Location: !Ref CodePipelineArtifactBucket
+        Type: 'S3'
+      Name: !Sub '${StackPrefix}-Pipeline'
+      RoleArn: !GetAtt CodePipelineRole.Arn
+      Stages:
+        - Name: 'Source'
+          Actions:
+            - Name: 'Source'
+              RunOrder: 1
+              ActionTypeId:
+                Category: 'Source'
+                Owner: 'AWS'
+                Provider: 'ECR'
+                Version: '1'
+              Configuration:
+                RepositoryName: 'web'
+              OutputArtifacts:
+                - Name: 'Source'
+
+        - Name: 'Build'
+          Actions:
+            - Name: 'Build'
+              RunOrder: 1
+              InputArtifacts:
+                - Name: 'Source'
+              ActionTypeId:
+                Category: 'Build'
+                Owner: 'AWS'
+                Provider: 'CodeBuild'
+                Version: '1'
+              Configuration:
+                ProjectName: !Ref CodeBuildProject
+              OutputArtifacts:
+                - Name: 'Build'
+
+        # - Name: 'PreDeploy'
+        #   Actions:
+        #     - Name: 'CreateChangeSet'
+        #       RunOrder: 1
+        #       InputArtifacts:
+        #         - Name: 'Source'
+        #         - Name: 'Build'
+        #       ActionTypeId:
+        #         Category: 'Deploy'
+        #         Owner: 'AWS'
+        #         Provider: 'CloudFormation'
+        #         Version: '1'
+        #       Configuration:
+        #         ActionMode: 'CHANGE_SET_REPLACE'
+        #         ChangeSetName: !Sub '${AWS::StackName}-PreDeploy'
+        #         StackName: !Sub '${StackName}-ecs-service'
+        #         Capabilities: 'CAPABILITY_NAMED_IAM'
+        #         TemplatePath: 'Source::aws/ecs-service.yaml'
+        #         RoleArn: !GetAtt CodePipelineCFnDeployRole.Arn
+        #         ParameterOverrides: !Sub |
+        #           {
+        #             "ImageTag": { "Fn::GetParam" : [ "Build", "build.json", "tag" ] }
+        #           }
+        # #XXX: 継続的デリバリにしたい場合はコメントアウトする
+        # # - Name: Approve
+        # #   Actions:
+        # #     - Name: Approve
+        # #       RunOrder: 1
+        # #       ActionTypeId:
+        # #         Category: Approval
+        # #         Owner: AWS
+        # #         Provider: Manual
+        # #         Version: '1'
+
+        - Name: 'Deploy'
+          Actions:
+            - Name: 'Deploy'
+              RunOrder: 1
+              InputArtifacts:
+                - Name: 'Build'
+              ActionTypeId:
+                Category: 'Deploy'
+                Owner: 'AWS'
+                Provider: 'ECS'
+                Version: '1'
+              Configuration:
+                ClusterName: !Ref EcsCluster
+                ServiceName: !GetAtt EcsService.Name
+                FileName: 'imageManifest.json'
+
+
+  # ECRのpushを監視するための CloudWatchEvent
+  CloudWatchEventECRRuleRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Action: ['sts:AssumeRole']
+            Effect: 'Allow'
+            Principal:
+              Service: ['events.amazonaws.com']
+      Policies:
+        - PolicyName: "CodePipeline-Execution"
+          PolicyDocument: !Sub |
+            {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "codepipeline:StartPipelineExecution"
+                  ],
+                  "Resource": [
+                    "arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${CodePipeline}"
+                  ]
+                }
+              ]
+            }
+
+  CloudWatchEventECRRule:
+    Type: 'AWS::Events::Rule'
+    Properties:
+      Description: 'EventRule'
+      State: "ENABLED"
+      EventPattern: !Sub |
+        {
+          "source": [
+            "aws.ecr"
+          ],
+          "detail": {
+            "eventName": [
+              "PutImage"
+            ],
+            "requestParameters": {
+              "repositoryName": [
+                "web"
+              ]
+            }
+          }
+        }
+      Targets:
+        - RoleArn: !GetAtt CloudWatchEventECRRuleRole.Arn
+          Arn: !Sub 'arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${CodePipeline}'
+          Id: !Ref CodePipeline
