@@ -68,6 +68,43 @@ Parameters:
     Type: 'String'
     Default: 'ponkotu.me'
 
+  ImageTag:
+    Type: 'String'
+    Default: 'latest'
+
+  AppName:
+    Type: 'String'
+    Default: 'ci-cd-example'
+  AppEnv:
+    Type: 'String'
+    Default: 'development'
+  AppKey:
+    # Type: 'AWS::SSM::Parameter::Value<String>'
+    Type: 'String'
+    Default: 'base64:IsVcCI7S9qDrpzpSodvHqPWFExdJvhlKgQf2q94IOLQ='
+    NoEcho: true
+  AppDebug:
+    Type: 'String'
+    Default: 'true'
+
+  LogChannel:
+    Type: 'String'
+    Default: 'stack'
+
+  DbName:
+    # Type: 'AWS::SSM::Parameter::Value<String>'
+    Type: 'String'
+    Default: 'example'
+  DbUser:
+    # Type: 'AWS::SSM::Parameter::Value<String>'
+    Type: 'String'
+    Default: 'dbuser'
+  DbPass:
+    # Type: 'AWS::SSM::Parameter::Value<String>'
+    Type: 'String'
+    Default: 'password'
+    NoEcho: true
+
 Resources:
   ##################################################
   # VPC
@@ -574,3 +611,142 @@ Resources:
     Type: 'AWS::ECS::Cluster'
     Properties:
       ClusterName: !Sub '${StackPrefix}-cluster'
+
+  ##################################################
+  # ECS Service
+  ##################################################
+  AlbTargetGroup:
+    Type: 'AWS::ElasticLoadBalancingV2::TargetGroup'
+    Properties:
+      Name: !Sub 'tg-${StackPrefix}'
+      VpcId: !Ref Vpc
+      Port: 80
+      Protocol: 'HTTP'
+      TargetType: 'ip'
+      # HealthCheck
+      HealthCheckIntervalSeconds: 10
+      HealthCheckPath: '/'
+      HealthCheckPort: 80
+      HealthCheckProtocol: 'HTTP'
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 3
+      UnhealthyThresholdCount: 2
+      Matcher:
+        HttpCode: '200-399'
+
+  AlbListener:
+    Type: 'AWS::ElasticLoadBalancingV2::ListenerRule'
+    Properties:
+      Actions:
+        - Type: 'forward'
+          TargetGroupArn: !Ref AlbTargetGroup
+      Conditions:
+        - Field: 'path-pattern'
+          Values: ['*']
+      ListenerArn: !Ref AlbListenerHttps
+      Priority: 10
+
+  EcsTaskIam:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument: |
+        {
+          "Statement": [{
+            "Effect": "Allow",
+            "Action": "sts:AssumeRole",
+            "Principal": {
+              "Service": "ecs-tasks.amazonaws.com"
+            }
+          }]
+        }
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy'
+
+  # Log Group
+  EcsTaskLogGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Properties:
+      LogGroupName: !Sub '/${StackPrefix}/ecs/app'
+      RetentionInDays: 7
+
+  EcsTaskDefinition:
+    Type: 'AWS::ECS::TaskDefinition'
+    Properties:
+      Family: !Sub '${StackPrefix}-app'
+      Cpu: '256'
+      Memory: '0.5GB'
+      NetworkMode: 'awsvpc'
+      RequiresCompatibilities: ['FARGATE']
+      ExecutionRoleArn: !Ref EcsTaskIam
+      TaskRoleArn: !Ref EcsTaskIam
+      ContainerDefinitions:
+        # nginx
+        - Name: 'nginx'
+          Image: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/nginx:${ImageTag}'
+          MemoryReservation: 64
+          Essential: true
+          PortMappings:
+          - HostPort: 80
+            Protocol: 'tcp'
+            ContainerPort: 80
+          LogConfiguration:
+            LogDriver: 'awslogs'
+            Options:
+              awslogs-group: !Sub '/${StackPrefix}/ecs/app'
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: 'nginx'
+          Environment:
+            - Name: 'PHP_HOST'
+              Value: '127.0.0.1'
+
+        # Web
+        - Name: 'web'
+          Image: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/web:${ImageTag}'
+          MemoryReservation: 256
+          Essential: true
+          LogConfiguration:
+            LogDriver: 'awslogs'
+            Options:
+              awslogs-group: !Sub '/${StackPrefix}/ecs/app'
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: 'web'
+          Environment:
+            - Name: 'APP_NAME'
+              Value: !Ref AppName
+            - Name: 'APP_ENV'
+              Value: !Ref AppEnv
+            - Name: 'APP_KEY'
+              Value: !Ref AppKey
+            - Name: 'APP_DEBUG'
+              Value: !Ref AppDebug
+            - Name: 'LOG_CHANNEL'
+              Value: !Ref LogChannel
+            - Name: 'DB_HOST'
+              Value: !GetAtt AuroraCluster.Endpoint.Address
+            - Name: 'DB_DATABASE'
+              Value: !Ref DbName
+            - Name: 'DB_USERNAME'
+              Value: !Ref DbUser
+            - Name: 'DB_PASSWORD'
+              Value: !Ref DbPass
+
+  EcsService:
+    Type: 'AWS::ECS::Service'
+    Properties:
+      TaskDefinition: !Ref EcsTaskDefinition
+      DesiredCount: 1
+      LaunchType: 'FARGATE'
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          SecurityGroups:
+            - !Ref SecurityGroupEcsApp
+          Subnets:
+            - !Ref SubnetPrivate0
+            - !Ref SubnetPrivate1
+            - !Ref SubnetPrivate2
+      Cluster: !Ref EcsCluster
+      LoadBalancers:
+        - TargetGroupArn: !Ref AlbTargetGroup
+          ContainerPort: 80
+          ContainerName: 'nginx'
+
